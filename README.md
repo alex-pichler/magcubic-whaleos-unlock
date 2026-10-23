@@ -34,6 +34,21 @@ PC --TCP:9998--> Kodi process (uid 10039, addon script.pjshell)
 Only step 1 needs Kodi. After the boot app is installed, a cold boot brings root SSH
 back on its own. Kodi is not involved.
 
+## Order of dependencies
+
+Root comes first and needs no adb. The Kodi addon -> pyeval -> JNI -> `HwBinder.transact(386)`
+-> `systemCmd` chain is the whole root primitive. It is the only thing that gives uid 0 on
+this box, and nothing in it depends on adb.
+
+adb on `<PROJECTOR_IP>:5555` is enabled afterward, using that root: root repairs the adb key
+file (`/data/misc/adb/adb_keys`) and restarts adbd. No script in this repo performs
+that key fix. Once adb is up, `pj-sshd.sh` and `pjroot.sh` use it only as a convenience
+transport (`adb push`, `adb forward`).
+
+A reader who prefers not to use adb can run the same commands through `sc_cmd.py`
+(`systemCmd`) or the Kodi channel (`pjsh2.py`) instead. `pjroot.sh` starts its listener
+through `pjeval.py` and does not need adb for that part; only the forward to the PC does.
+
 ## Files
 
 | Path | Role |
@@ -44,7 +59,7 @@ back on its own. Kodi is not involved.
 | `pjsh2.py` | PC side of the `:9999` shell: runs commands, returns their output. |
 | `sc_cmd.py` | The root gadget. Runs inside Kodi: JNI, `HwBinder.transact(386)`, `systemCmd`. Edit `ARGS` for the command to run as root. |
 | `sc_call.py` | Same plumbing for other ISystemControl calls. Used for the `stm_at` env write (code 59). |
-| `pjroot.sh` | Root shell helper: starts a loopback root listener through `sc_cmd.py`, reached via `adb forward`. Used by `pj-sshd.sh`. |
+| `pjroot.sh` | Root shell helper: starts a loopback root listener through `sc_cmd.py`, reached from the PC via `adb forward` (optional transport). Used by `pj-sshd.sh`. |
 | `pj-sshd.sh` | Installs dropbear and its key/passwd files under `/data/local/ssh`, starts the root sshd. Bootstrap only. |
 | `restart.sh` | Runs on each boot as root (from the boot app). Recreates `/dev/ssh`, the passwd bind mount, and starts dropbear. |
 | `pjctl/` | The boot app (`BootReceiver`, `MainActivity`, `Pjctl`), its manifest and `build.sh`. |
@@ -56,7 +71,9 @@ back on its own. Kodi is not involved.
 - The projector on your LAN. Set `PJ_HOST=<PROJECTOR_IP>` for every script below.
 - Kodi running on the box (only for step 1).
 - PC: `python3`. For `pjctl/build.sh`: Android SDK (build-tools 34.0.0, platform android-33) and a JDK.
-  For `pj-sshd.sh` and `pjroot.sh`: `adb` reachable on `<PROJECTOR_IP>:5555`.
+- adb is optional. `pj-sshd.sh` and `pjroot.sh` use `adb` to `<PROJECTOR_IP>:5555` as a transport,
+  once adbd is up from root (see Order of dependencies). Without it, run the same commands through
+  `sc_cmd.py` or `pjsh2.py`.
 - The dropbear binaries (`dropbear`, `dropbearkey`, `scp`) in `ssh/`. Build them as described in `ssh/README.md`.
 
 ## Step 0: install the addon
@@ -92,13 +109,14 @@ PJ_HOST=<PROJECTOR_IP> python3 -I pjsh2.py \
 Root-created files are `0600 root`, which is why the file is pre-created.
 
 For an interactive root shell over `adb forward`, use `./pjroot.sh` (no arguments)
-or `./pjroot.sh 'id; getprop'` for one command.
+or `./pjroot.sh 'id; getprop'` for one command. The listener itself is started through
+`pjeval.py` without adb; the adb forward is only how the PC reaches it.
 
 ## Step 2: root sshd (bootstrap)
 
 `pj-sshd.sh` pushes dropbear, dropbearkey and scp to `/data/local/ssh`, creates a
 synthetic `/etc/passwd`, generates a host key, and starts `dropbear -s` on port 22.
-It runs its root commands through `pjroot.sh`.
+It runs its root commands through `pjroot.sh` and pushes the binaries with `adb push`.
 
 Before the first run, also copy your public key to `/data/local/ssh/authorized_keys`.
 `restart.sh` copies from that path on every boot; `pj-sshd.sh` only writes the
